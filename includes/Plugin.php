@@ -24,6 +24,9 @@ class Plugin {
 
         // AJAX for manual run
         add_action('wp_ajax_aspom_manual_run_ajax', [__CLASS__, 'ajax_manual_run']);
+
+        // Ensure cron is scheduled (check on init)
+        self::ensure_cron_scheduled();
     }
 
     public static function activate() {
@@ -31,8 +34,10 @@ class Plugin {
         if (get_option(self::OPTION_KEY) === false) {
             add_option(self::OPTION_KEY, $defaults);
         }
-        // ensure schedule exists
-        self::reschedule();
+        // Clear any existing scheduled event
+        wp_clear_scheduled_hook(self::CRON_HOOK);
+        // Schedule new event
+        self::schedule_cron();
     }
 
     public static function deactivate() {
@@ -74,7 +79,38 @@ class Plugin {
 
     public static function reschedule() {
         wp_clear_scheduled_hook(self::CRON_HOOK);
-        wp_schedule_event(time(), 'aspom_custom_interval', self::CRON_HOOK);
+        self::schedule_cron();
+    }
+
+    public static function schedule_cron() {
+        // Ensure the custom schedule is registered by triggering the filter
+        $schedules = wp_get_schedules();
+
+        // Add our custom schedule to the schedules array
+        $opts = get_option(self::OPTION_KEY, self::defaults());
+        $secs = intval($opts['interval_seconds'] ?: 300);
+        if ($secs < 5) $secs = 5;
+
+        // Try to schedule with custom interval
+        $scheduled = wp_schedule_event(time(), 'aspom_custom_interval', self::CRON_HOOK);
+
+        if ($scheduled === false) {
+            // If scheduling failed, log it
+            error_log('[AutoSyncPro] Failed to schedule cron event');
+        } else {
+            error_log('[AutoSyncPro] Cron scheduled successfully with interval: ' . $secs . ' seconds');
+        }
+
+        return $scheduled;
+    }
+
+    public static function ensure_cron_scheduled() {
+        // Check if cron is scheduled
+        $next_run = wp_next_scheduled(self::CRON_HOOK);
+        if (!$next_run) {
+            // Not scheduled, schedule it now
+            self::schedule_cron();
+        }
     }
 
     public static function ajax_manual_run() {

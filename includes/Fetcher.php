@@ -2,6 +2,7 @@
 namespace AutoSyncPro;
 
 use AutoSyncPro\AI\AIClient;
+use AutoSyncPro\ImportLogger;
 
 if (!defined('ABSPATH')) exit;
 
@@ -60,7 +61,15 @@ class Fetcher {
     }
 
     public static function post_already_imported($remote_id, $source_url, $slug = '') {
-        // First check by remote_id if available
+        // PRIORITY CHECK: Check log file first (fastest and most reliable)
+        if (!empty($slug)) {
+            if (ImportLogger::is_slug_imported($slug, $source_url)) {
+                self::log('Post already imported (found in log): ' . $slug . ' from ' . $source_url);
+                return true;
+            }
+        }
+
+        // Second check: by remote_id if available
         if ($remote_id > 0) {
             $args = [
                 'post_type' => 'post',
@@ -175,6 +184,15 @@ class Fetcher {
 
         update_post_meta($post_id, '_aspom_remote_id', isset($remote_post->id) ? intval($remote_post->id) : 0);
         update_post_meta($post_id, '_aspom_source_url', $source_url);
+
+        // Get the actual post slug that WordPress assigned (may have been modified)
+        $actual_post = get_post($post_id);
+        if ($actual_post) {
+            $actual_slug = $actual_post->post_name;
+            $post_title = $actual_post->post_title;
+            ImportLogger::log_import($actual_slug, $source_url, $post_id, $post_title);
+            self::log('Logged import: ' . $actual_slug . ' (Post ID: ' . $post_id . ')');
+        }
 
         // featured image
         if (!empty($opts['fetch_featured_image'])) {

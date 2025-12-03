@@ -3,6 +3,7 @@ namespace AutoSyncPro\Admin;
 
 use AutoSyncPro\Plugin;
 use AutoSyncPro\Fetcher;
+use AutoSyncPro\ImportLogger;
 
 if (!defined('ABSPATH')) exit;
 
@@ -11,6 +12,8 @@ class Settings {
         add_action('admin_menu', [__CLASS__, 'menu']);
         add_action('admin_post_aspom_save_settings', [__CLASS__, 'save_settings']);
         add_action('wp_ajax_aspom_manual_run_ajax', [__CLASS__, 'ajax_manual_run']);
+        add_action('wp_ajax_aspom_clear_logs', [__CLASS__, 'ajax_clear_logs']);
+        add_action('wp_ajax_aspom_reschedule_cron', [__CLASS__, 'ajax_reschedule_cron']);
         add_action('admin_notices', [__CLASS__, 'show_cron_status']);
     }
 
@@ -32,6 +35,7 @@ class Settings {
         add_submenu_page('aspom-settings', 'Sources', 'Sources', 'manage_options', 'aspom-sources', [__CLASS__, 'page_sources']);
         add_submenu_page('aspom-settings', 'Filters', 'Filters', 'manage_options', 'aspom-filters', [__CLASS__, 'page_filters']);
         add_submenu_page('aspom-settings', 'AI', 'AI', 'manage_options', 'aspom-ai', [__CLASS__, 'page_ai']);
+        add_submenu_page('aspom-settings', 'Import Logs', 'Import Logs', 'manage_options', 'aspom-logs', [__CLASS__, 'page_logs']);
     }
 
     public static function show_cron_status() {
@@ -41,19 +45,59 @@ class Settings {
 
         $next_run = wp_next_scheduled(Plugin::CRON_HOOK);
         $last_run = get_option('aspom_last_run_time', 0);
+        $opts = get_option(Plugin::OPTION_KEY, Plugin::defaults());
+        $interval = intval($opts['interval_seconds'] ?: 300);
 
         if ($next_run) {
             $time_diff = $next_run - time();
-            $next_run_display = $time_diff > 0 ? 'in ' . human_time_diff(time(), $next_run) : 'overdue';
+            if ($time_diff > 0) {
+                $next_run_display = 'in ' . human_time_diff(time(), $next_run);
+                $status_color = '#00a32a';
+                $status_icon = '&#10004;';
+            } else {
+                $next_run_display = 'overdue by ' . human_time_diff($next_run, time());
+                $status_color = '#f0b849';
+                $status_icon = '&#9888;';
+            }
         } else {
-            $next_run_display = 'Not scheduled';
+            $next_run_display = 'Not scheduled - Click "Reschedule Cron" below';
+            $status_color = '#dc3232';
+            $status_icon = '&#10008;';
         }
 
         $last_run_display = $last_run ? human_time_diff($last_run) . ' ago' : 'Never';
         ?>
-        <div class="notice notice-info" style="padding:12px;">
-            <p><strong>Auto Sync Pro Status:</strong> Next run: <code><?php echo esc_html($next_run_display); ?></code> | Last run: <code><?php echo esc_html($last_run_display); ?></code></p>
+        <div class="notice notice-info" style="padding:15px; background: #fff; border-left: 4px solid <?php echo esc_attr($status_color); ?>;">
+            <p style="margin: 0; font-size: 14px;">
+                <span style="color: <?php echo esc_attr($status_color); ?>; font-size: 18px;"><?php echo $status_icon; ?></span>
+                <strong>Auto Sync Pro Status:</strong>
+                Next run: <code style="background: #f0f0f1; padding: 2px 6px; border-radius: 3px;"><?php echo esc_html($next_run_display); ?></code> |
+                Last run: <code style="background: #f0f0f1; padding: 2px 6px; border-radius: 3px;"><?php echo esc_html($last_run_display); ?></code> |
+                Interval: <code style="background: #f0f0f1; padding: 2px 6px; border-radius: 3px;"><?php echo esc_html($interval); ?>s</code>
+                <?php if (!$next_run): ?>
+                    <button type="button" id="aspom-reschedule-cron" class="button button-small" style="margin-left: 10px;">Reschedule Cron</button>
+                <?php endif; ?>
+            </p>
         </div>
+        <script>
+        jQuery(document).ready(function($) {
+            $('#aspom-reschedule-cron').on('click', function() {
+                var btn = $(this);
+                btn.prop('disabled', true).text('Rescheduling...');
+                $.post(ajaxurl, {
+                    action: 'aspom_reschedule_cron',
+                    nonce: '<?php echo wp_create_nonce('aspom_reschedule_cron'); ?>'
+                }, function(resp) {
+                    if (resp.success) {
+                        location.reload();
+                    } else {
+                        alert('Failed to reschedule: ' + resp.data);
+                        btn.prop('disabled', false).text('Reschedule Cron');
+                    }
+                });
+            });
+        });
+        </script>
         <?php
     }
 
@@ -323,5 +367,161 @@ class Settings {
         if (!current_user_can('manage_options')) wp_send_json_error('Unauthorized');
         Fetcher::handle(true);
         wp_send_json_success('Manual run complete');
+    }
+
+    public static function ajax_clear_logs() {
+        check_ajax_referer('aspom_clear_logs_nonce', 'nonce');
+        if (!current_user_can('manage_options')) wp_send_json_error('Unauthorized');
+
+        $cleared = ImportLogger::clear_logs();
+        if ($cleared) {
+            wp_send_json_success('Logs cleared successfully');
+        } else {
+            wp_send_json_success('No logs to clear');
+        }
+    }
+
+    public static function ajax_reschedule_cron() {
+        check_ajax_referer('aspom_reschedule_cron', 'nonce');
+        if (!current_user_can('manage_options')) wp_send_json_error('Unauthorized');
+
+        Plugin::reschedule();
+        wp_send_json_success('Cron rescheduled successfully');
+    }
+
+    public static function page_logs() {
+        $per_page = 50;
+        $page = isset($_GET['paged']) ? max(1, intval($_GET['paged'])) : 1;
+        $offset = ($page - 1) * $per_page;
+
+        $logs = ImportLogger::get_all_logs($per_page, $offset);
+        $total_logs = ImportLogger::get_log_count();
+        $file_size = ImportLogger::get_log_file_size();
+        $total_pages = ceil($total_logs / $per_page);
+        ?>
+        <div class="wrap">
+            <h1>Import Logs</h1>
+
+            <div class="aspom-logs-header" style="background: #fff; border: 1px solid #ccd0d4; border-radius: 4px; padding: 20px; margin: 20px 0;">
+                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 20px;">
+                    <div>
+                        <h3 style="margin: 0 0 5px 0; color: #1d2327;">Total Imports</h3>
+                        <p style="font-size: 24px; font-weight: 600; margin: 0; color: #2271b1;"><?php echo number_format($total_logs); ?></p>
+                    </div>
+                    <div>
+                        <h3 style="margin: 0 0 5px 0; color: #1d2327;">Log File Size</h3>
+                        <p style="font-size: 24px; font-weight: 600; margin: 0; color: #2271b1;"><?php echo esc_html(ImportLogger::format_file_size($file_size)); ?></p>
+                    </div>
+                    <div>
+                        <h3 style="margin: 0 0 5px 0; color: #1d2327;">Status</h3>
+                        <p style="font-size: 24px; font-weight: 600; margin: 0; color: #00a32a;">Active</p>
+                    </div>
+                </div>
+                <div style="margin-top: 20px;">
+                    <button id="aspom-clear-logs" class="button button-secondary" style="background: #dc3232; color: #fff; border-color: #dc3232;">
+                        Clear All Logs
+                    </button>
+                    <span id="aspom-clear-logs-result" style="margin-left: 10px; font-weight: 600;"></span>
+                </div>
+            </div>
+
+            <?php if (empty($logs)): ?>
+                <div class="notice notice-info" style="padding: 15px;">
+                    <p>No imports logged yet. Start fetching posts to see logs here.</p>
+                </div>
+            <?php else: ?>
+                <table class="wp-list-table widefat fixed striped" style="margin-top: 20px;">
+                    <thead>
+                        <tr>
+                            <th style="width: 140px;">Date & Time</th>
+                            <th style="width: 60px;">Post ID</th>
+                            <th style="width: 200px;">URL Slug</th>
+                            <th>Title</th>
+                            <th style="width: 300px;">Source</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <?php foreach ($logs as $log): ?>
+                            <tr>
+                                <td><?php echo esc_html($log['timestamp']); ?></td>
+                                <td>
+                                    <?php if ($log['post_id']): ?>
+                                        <a href="<?php echo esc_url(get_edit_post_link($log['post_id'])); ?>" target="_blank">
+                                            <?php echo esc_html($log['post_id']); ?>
+                                        </a>
+                                    <?php endif; ?>
+                                </td>
+                                <td>
+                                    <code style="font-size: 11px; background: #f0f0f1; padding: 2px 6px; border-radius: 3px;">
+                                        <?php echo esc_html($log['slug']); ?>
+                                    </code>
+                                </td>
+                                <td>
+                                    <strong><?php echo esc_html($log['title'] ? substr($log['title'], 0, 80) : '(no title)'); ?></strong>
+                                    <?php if (strlen($log['title']) > 80): ?>...<?php endif; ?>
+                                </td>
+                                <td style="font-size: 11px; color: #646970;">
+                                    <?php echo esc_html($log['source']); ?>
+                                </td>
+                            </tr>
+                        <?php endforeach; ?>
+                    </tbody>
+                </table>
+
+                <?php if ($total_pages > 1): ?>
+                    <div class="tablenav bottom" style="margin-top: 20px;">
+                        <div class="tablenav-pages">
+                            <span class="displaying-num"><?php echo number_format($total_logs); ?> items</span>
+                            <span class="pagination-links">
+                                <?php
+                                $base_url = admin_url('admin.php?page=aspom-logs');
+                                if ($page > 1) {
+                                    echo '<a class="button" href="' . esc_url($base_url . '&paged=' . ($page - 1)) . '">&laquo; Previous</a> ';
+                                }
+                                echo '<span class="paging-input">Page ' . $page . ' of ' . $total_pages . '</span>';
+                                if ($page < $total_pages) {
+                                    echo ' <a class="button" href="' . esc_url($base_url . '&paged=' . ($page + 1)) . '">Next &raquo;</a>';
+                                }
+                                ?>
+                            </span>
+                        </div>
+                    </div>
+                <?php endif; ?>
+            <?php endif; ?>
+        </div>
+
+        <script>
+        jQuery(document).ready(function($) {
+            $('#aspom-clear-logs').on('click', function(e) {
+                e.preventDefault();
+
+                if (!confirm('Are you sure you want to clear all import logs? This action cannot be undone.')) {
+                    return;
+                }
+
+                var btn = $(this);
+                btn.prop('disabled', true).text('Clearing...');
+
+                $.post(ajaxurl, {
+                    action: 'aspom_clear_logs',
+                    nonce: '<?php echo wp_create_nonce('aspom_clear_logs_nonce'); ?>'
+                }, function(resp) {
+                    if (resp.success) {
+                        $('#aspom-clear-logs-result').text('Logs cleared successfully!').css('color', '#00a32a');
+                        setTimeout(function() {
+                            location.reload();
+                        }, 1000);
+                    } else {
+                        $('#aspom-clear-logs-result').text('Error: ' + resp.data).css('color', '#dc3232');
+                        btn.prop('disabled', false).text('Clear All Logs');
+                    }
+                }).fail(function() {
+                    $('#aspom-clear-logs-result').text('Request failed').css('color', '#dc3232');
+                    btn.prop('disabled', false).text('Clear All Logs');
+                });
+            });
+        });
+        </script>
+        <?php
     }
 }
