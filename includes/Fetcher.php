@@ -31,8 +31,8 @@ class Fetcher {
             foreach ($posts as $p) {
                 $remote_id = isset($p->id) ? intval($p->id) : 0;
                 $slug = isset($p->slug) ? sanitize_title($p->slug) : '';
-                if (self::post_already_imported($remote_id, $source, $slug)) {
-                    self::log('Post already imported from ' . $source . ' (ID: ' . $remote_id . ', Slug: ' . $slug . ')');
+                $title = isset($p->title->rendered) ? wp_strip_all_tags($p->title->rendered) : '';
+                if (self::post_already_imported($remote_id, $source, $slug, $title)) {
                     continue;
                 }
                 self::publish_post($p, $source, $cat_id, $opts);
@@ -60,11 +60,11 @@ class Fetcher {
         return [];
     }
 
-    public static function post_already_imported($remote_id, $source_url, $slug = '') {
+    public static function post_already_imported($remote_id, $source_url, $slug = '', $title = '') {
         // PRIORITY CHECK 1: Check by remote_id in log file (most reliable)
         if ($remote_id > 0) {
             if (ImportLogger::is_remote_id_imported($remote_id, $source_url)) {
-                self::log('Post already imported (found by remote ID in log): ' . $remote_id . ' from ' . $source_url);
+                self::log('Duplicate blocked (remote ID in log): ' . $remote_id);
                 return true;
             }
         }
@@ -89,20 +89,28 @@ class Fetcher {
             ];
             $q = new \WP_Query($args);
             if ($q->have_posts()) {
-                self::log('Post already imported (found by remote ID in DB): ' . $remote_id);
+                self::log('Duplicate blocked (remote ID in DB): ' . $remote_id);
                 return true;
             }
         }
 
-        // PRIORITY CHECK 3: Check by slug (with base slug comparison to catch -2, -3 variants)
+        // PRIORITY CHECK 3: Check by slug in log (with base slug comparison)
         if (!empty($slug)) {
             if (ImportLogger::is_slug_imported($slug, $source_url)) {
-                self::log('Post already imported (found by slug in log): ' . $slug . ' from ' . $source_url);
+                self::log('Duplicate blocked (slug in log): ' . $slug);
                 return true;
             }
         }
 
-        // Fallback: check by slug in database (catches any slug variant)
+        // PRIORITY CHECK 4: Check by title in log (catches if remote ID or slug changed)
+        if (!empty($title)) {
+            if (ImportLogger::is_post_by_title_imported($title, $source_url)) {
+                self::log('Duplicate blocked (title in log): ' . $title);
+                return true;
+            }
+        }
+
+        // PRIORITY CHECK 5: Check by slug in database (catches any slug variant)
         if (!empty($slug)) {
             $base_slug = preg_replace('/-\d+$/', '', $slug);
             $args = [
@@ -123,7 +131,7 @@ class Fetcher {
                     $post_slug = get_post_field('post_name', get_the_ID());
                     $post_base_slug = preg_replace('/-\d+$/', '', $post_slug);
                     if ($post_base_slug === $base_slug) {
-                        self::log('Post already imported (found by slug variant in DB): ' . $slug . ' matches ' . $post_slug);
+                        self::log('Duplicate blocked (slug variant in DB): ' . $slug);
                         wp_reset_postdata();
                         return true;
                     }

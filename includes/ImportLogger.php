@@ -26,14 +26,14 @@ class ImportLogger {
             return false;
         }
 
-        $search_pattern = 'RemoteID:' . $remote_id . '|Source:' . $source_url;
         $lines = file($log_file, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
         if (!$lines) {
             return false;
         }
 
         foreach ($lines as $line) {
-            if (strpos($line, $search_pattern) !== false) {
+            // Match: RemoteID:123 | ... | Source:url
+            if (preg_match('/RemoteID:' . preg_quote($remote_id) . '\s*\|.*Source:\s*' . preg_quote($source_url) . '/', $line)) {
                 return true;
             }
         }
@@ -58,11 +58,41 @@ class ImportLogger {
 
         foreach ($lines as $line) {
             // Check if this source URL and a slug with same base exists
-            if (strpos($line, 'Source:' . $source_url) !== false) {
-                if (preg_match('/Slug:([\w-]+)/', $line, $matches)) {
+            if (preg_match('/Source:\s*' . preg_quote($source_url) . '/', $line)) {
+                if (preg_match('/Slug:\s*([\w-]+)/', $line, $matches)) {
                     $logged_slug = $matches[1];
                     $logged_base = preg_replace('/-\d+$/', '', $logged_slug);
                     if ($logged_base === $base_slug) {
+                        return true;
+                    }
+                }
+            }
+        }
+
+        return false;
+    }
+
+    public static function is_post_by_title_imported($title, $source_url) {
+        // Fallback: Check by title to catch cases where remote ID or slug changed
+        if (empty($title)) {
+            return false;
+        }
+
+        $log_file = self::get_log_file_path();
+        if (!file_exists($log_file)) {
+            return false;
+        }
+
+        $lines = file($log_file, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
+        if (!$lines) {
+            return false;
+        }
+
+        foreach ($lines as $line) {
+            if (preg_match('/Source:\s*' . preg_quote($source_url) . '/', $line)) {
+                if (preg_match('/Title:\s*(.+?)$/', $line, $matches)) {
+                    $logged_title = trim($matches[1]);
+                    if ($logged_title === $title) {
                         return true;
                     }
                 }
