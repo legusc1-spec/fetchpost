@@ -444,12 +444,14 @@ class Settings {
                         <?php foreach ($logs as $log): ?>
                             <tr>
                                 <td><?php echo esc_html($log['timestamp']); ?></td>
-                                <td>
-                                    <?php if ($log['post_id']): ?>
-                                        <a href="<?php echo esc_url(get_edit_post_link($log['post_id'])); ?>" target="_blank">
-                                            <?php echo esc_html($log['post_id']); ?>
-                                        </a>
-                                    <?php endif; ?>
+                                <td style="text-align: center;">
+                                    <small style="color: #646970;">
+                                        <?php if ($log['post_id']): ?>
+                                            <a href="<?php echo esc_url(get_edit_post_link($log['post_id'])); ?>" target="_blank" title="Edit post">
+                                                <?php echo esc_html($log['post_id']); ?>
+                                            </a>
+                                        <?php endif; ?>
+                                    </small>
                                 </td>
                                 <td>
                                     <code style="font-size: 11px; background: #f0f0f1; padding: 2px 6px; border-radius: 3px;">

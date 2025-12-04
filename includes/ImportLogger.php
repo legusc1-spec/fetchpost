@@ -20,37 +20,66 @@ class ImportLogger {
         return self::$log_file;
     }
 
-    public static function is_slug_imported($slug, $source_url) {
-        $index_file = self::get_log_file_path() . '.index';
+    public static function is_remote_id_imported($remote_id, $source_url) {
+        $log_file = self::get_log_file_path();
+        if (!file_exists($log_file)) {
+            return false;
+        }
 
-        // Check index file first for better performance
-        if (file_exists($index_file)) {
-            $identifier = self::create_identifier($slug, $source_url);
-            $handle = fopen($index_file, 'r');
-            if (!$handle) {
-                return false;
-            }
+        $search_pattern = 'RemoteID:' . $remote_id . '|Source:' . $source_url;
+        $lines = file($log_file, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
+        if (!$lines) {
+            return false;
+        }
 
-            while (($line = fgets($handle)) !== false) {
-                if (trim($line) === $identifier) {
-                    fclose($handle);
-                    return true;
-                }
+        foreach ($lines as $line) {
+            if (strpos($line, $search_pattern) !== false) {
+                return true;
             }
-            fclose($handle);
         }
 
         return false;
     }
 
-    public static function log_import($slug, $source_url, $post_id, $title = '') {
+    public static function is_slug_imported($slug, $source_url) {
+        // This now checks for base slug (without -2, -3 suffix)
         $log_file = self::get_log_file_path();
-        $identifier = self::create_identifier($slug, $source_url);
+        if (!file_exists($log_file)) {
+            return false;
+        }
+
+        // Extract base slug (remove -2, -3, -4 etc. suffixes)
+        $base_slug = preg_replace('/-\d+$/', '', $slug);
+
+        $lines = file($log_file, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
+        if (!$lines) {
+            return false;
+        }
+
+        foreach ($lines as $line) {
+            // Check if this source URL and a slug with same base exists
+            if (strpos($line, 'Source:' . $source_url) !== false) {
+                if (preg_match('/Slug:([\w-]+)/', $line, $matches)) {
+                    $logged_slug = $matches[1];
+                    $logged_base = preg_replace('/-\d+$/', '', $logged_slug);
+                    if ($logged_base === $base_slug) {
+                        return true;
+                    }
+                }
+            }
+        }
+
+        return false;
+    }
+
+    public static function log_import($slug, $source_url, $post_id, $title = '', $remote_id = 0) {
+        $log_file = self::get_log_file_path();
 
         $timestamp = current_time('mysql');
         $log_entry = sprintf(
-            "[%s] ID:%d | Slug:%s | Source:%s | Title:%s\n",
+            "[%s] RemoteID:%d | PostID:%d | Slug:%s | Source:%s | Title:%s\n",
             $timestamp,
+            $remote_id,
             $post_id,
             $slug,
             $source_url,
@@ -59,10 +88,6 @@ class ImportLogger {
 
         // Append to log file
         file_put_contents($log_file, $log_entry, FILE_APPEND | LOCK_EX);
-
-        // Also maintain a simple index for quick checking
-        $index_file = self::get_log_file_path() . '.index';
-        file_put_contents($index_file, $identifier . "\n", FILE_APPEND | LOCK_EX);
 
         return true;
     }
@@ -90,13 +115,14 @@ class ImportLogger {
 
         $logs = [];
         foreach ($lines as $line) {
-            if (preg_match('/\[(.*?)\]\s+ID:(\d+)\s+\|\s+Slug:(.*?)\s+\|\s+Source:(.*?)\s+\|\s+Title:(.*)/', $line, $matches)) {
+            if (preg_match('/\[(.*?)\]\s+RemoteID:(\d+)\s+\|\s+PostID:(\d+)\s+\|\s+Slug:(.*?)\s+\|\s+Source:(.*?)\s+\|\s+Title:(.*)/', $line, $matches)) {
                 $logs[] = [
                     'timestamp' => $matches[1],
-                    'post_id' => intval($matches[2]),
-                    'slug' => trim($matches[3]),
-                    'source' => trim($matches[4]),
-                    'title' => trim($matches[5]),
+                    'remote_id' => intval($matches[2]),
+                    'post_id' => intval($matches[3]),
+                    'slug' => trim($matches[4]),
+                    'source' => trim($matches[5]),
+                    'title' => trim($matches[6]),
                 ];
             }
         }
